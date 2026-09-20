@@ -1,15 +1,59 @@
 import { defineStore } from 'pinia'
-import { ref } from 'vue'
+import { computed, ref } from 'vue'
+import {
+  WAVELENGTH_MIN,
+  WAVELENGTH_MAX,
+  wavelengthToRGB,
+  type RGB,
+} from '@/config/wavelength'
 
 export const useOpticsStore = defineStore('optics', () => {
   const currentExperiment = ref('double')
   const params = ref({ wavelength: 550, slitWidth: 50, slitSeparation: 200, screenDistance: 1000 })
   const intensityData = ref<number[]>([])
   const result = ref<{ fringe?: number; centralWidth?: number }>({})
+  const error = ref<string | null>(null)
 
-  function setExperiment(id: string) { currentExperiment.value = id; compute() }
+  /**
+   * 当前波长对应的颜色，色标、图样、热力图、曲线、公式说明全部读这一处，
+   * 保证连续调节或失败重试后各处指向同一个颜色参数。
+   */
+  const wavelengthColor = computed<RGB>(() => wavelengthToRGB(params.value.wavelength))
+
+  function isWavelengthValid(nm: number): boolean {
+    return Number.isFinite(nm) && nm >= WAVELENGTH_MIN && nm <= WAVELENGTH_MAX
+  }
+
+  function setExperiment(id: string) {
+    currentExperiment.value = id
+    compute()
+  }
 
   function compute() {
+    if (!isWavelengthValid(params.value.wavelength)) {
+      // 无效波段：进入错误态，不沿用上一次的数据/颜色
+      error.value = `波长 ${params.value.wavelength} nm 不在可见光范围 ${WAVELENGTH_MIN}–${WAVELENGTH_MAX} nm 内`
+      intensityData.value = []
+      result.value = {}
+      return
+    }
+
+    try {
+      runCompute()
+      error.value = null
+    } catch (e) {
+      // 计算失败时保留错误态等待重试，避免渲染旧结果造成“残留上一颜色”
+      error.value = e instanceof Error ? e.message : '图样计算失败'
+    }
+  }
+
+  /** 失败后重试：清掉错误态并按当前参数重新计算 */
+  function retry() {
+    error.value = null
+    compute()
+  }
+
+  function runCompute() {
     const { wavelength: lam, slitWidth: a, slitSeparation: d, screenDistance: L } = params.value
     const lambda = lam * 1e-9
     const aM = a * 1e-6
@@ -51,5 +95,15 @@ export const useOpticsStore = defineStore('optics', () => {
     intensityData.value = data
   }
 
-  return { currentExperiment, params, intensityData, result, setExperiment, compute }
+  return {
+    currentExperiment,
+    params,
+    intensityData,
+    result,
+    error,
+    wavelengthColor,
+    setExperiment,
+    compute,
+    retry,
+  }
 })

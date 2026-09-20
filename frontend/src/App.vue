@@ -18,10 +18,19 @@
         <div class="bg-slate-800 rounded-lg p-4 border border-slate-700 space-y-4">
           <h3 class="text-sm font-bold text-slate-400">参数调节</h3>
           <div>
-            <label class="text-xs text-slate-500">波长 λ = {{ store.params.wavelength }} nm</label>
-            <input type="range" min="380" max="780" step="5" v-model.number="store.params.wavelength" @input="store.compute" class="w-full accent-cyan-500" />
+            <label class="text-xs text-slate-500">
+              波长 λ = {{ store.params.wavelength }} nm
+              <span class="inline-block w-2.5 h-2.5 rounded-full ml-1 align-middle border border-slate-500"
+                :style="{ backgroundColor: currentColorCss }"></span>
+            </label>
+            <input type="range" :min="WAVELENGTH_MIN" :max="WAVELENGTH_MAX" step="5"
+              v-model.number="store.params.wavelength" @input="store.compute"
+              class="w-full accent-cyan-500" />
+            <!-- 色标：渐变条与刻度数字全部来自集中配置，与图样同一份映射 -->
+            <div class="w-full h-1.5 rounded mt-1" :style="{ background: spectrumGradientCss }"></div>
             <div class="flex justify-between text-xs mt-0.5">
-              <span style="color:#8b5cf6">380</span><span style="color:#06b6d4">500</span><span style="color:#22c55e">550</span><span style="color:#eab308">600</span><span style="color:#dc2626">780</span>
+              <span v-for="tick in SAMPLE_TICKS" :key="tick"
+                :style="{ color: rgbCss(wavelengthToRGB(tick)) }">{{ tick }}</span>
             </div>
           </div>
           <div v-if="store.currentExperiment !== 'newton'">
@@ -36,10 +45,20 @@
             <label class="text-xs text-slate-500">屏幕距离 L = {{ store.params.screenDistance }} mm</label>
             <input type="range" min="100" max="2000" step="50" v-model.number="store.params.screenDistance" @input="store.compute" class="w-full accent-orange-500" />
           </div>
+          <div v-if="store.error" class="text-xs bg-red-900/30 border border-red-700 rounded p-2 text-red-300">
+            <div>{{ store.error }}</div>
+            <button @click="store.retry" class="mt-1 px-2 py-0.5 rounded bg-red-700/60 hover:bg-red-600 text-white">重试</button>
+          </div>
         </div>
         <div class="bg-slate-800 rounded-lg p-4 border border-slate-700 text-sm">
           <h3 class="text-sm font-bold text-slate-400 mb-3">理论公式</h3>
           <div class="space-y-2 text-xs text-slate-400">
+            <!-- 波长色说明：与色标/图样共用同一参数 store.wavelengthColor -->
+            <div class="bg-slate-900 rounded p-2 flex items-center gap-2">
+              <span class="inline-block w-4 h-4 rounded border border-slate-500"
+                :style="{ backgroundColor: currentColorCss }"></span>
+              <span>当前波长 {{ store.params.wavelength }} nm 对应光谱色</span>
+            </div>
             <div v-if="store.currentExperiment === 'double'" class="bg-slate-900 rounded p-2">
               <div class="text-cyan-400 font-bold">双缝干涉</div>
               <div>亮纹: y = kλL/d (k=0,±1,±2...)</div>
@@ -79,8 +98,18 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted, watch } from 'vue'
+import { ref, computed, onMounted, watch } from 'vue'
 import { useOpticsStore } from './store/optics'
+import {
+  WAVELENGTH_MIN,
+  WAVELENGTH_MAX,
+  SAMPLE_TICKS,
+  SPECTRUM_GRADIENT_BOUNDS,
+  wavelengthToRGB,
+  rgbCss,
+  rgbaCss,
+  type RGB,
+} from './config/wavelength'
 
 const store = useOpticsStore()
 const patternRef = ref<HTMLCanvasElement | null>(null)
@@ -93,50 +122,70 @@ const experiments = [
   { id: 'newton', name: '牛顿环干涉' },
 ]
 
-function wavelengthToRGB(nm: number): [number, number, number] {
-  let r = 0, g = 0, b = 0
-  if (nm >= 380 && nm < 440) { r = -(nm - 440) / 60; b = 1.0 }
-  else if (nm >= 440 && nm < 490) { g = (nm - 440) / 50; b = 1.0 }
-  else if (nm >= 490 && nm < 510) { g = 1.0; b = -(nm - 510) / 20 }
-  else if (nm >= 510 && nm < 580) { r = (nm - 510) / 70; g = 1.0 }
-  else if (nm >= 580 && nm < 645) { r = 1.0; g = -(nm - 645) / 65 }
-  else if (nm >= 645 && nm <= 780) { r = 1.0 }
-  return [Math.round(r * 255), Math.round(g * 255), Math.round(b * 255)]
+// 所有展示统一使用 store 中的同一颜色参数（连续调节/重试后保持一致）
+const currentColor = computed<RGB>(() => store.wavelengthColor)
+const currentColorCss = computed(() => rgbCss(currentColor.value))
+
+// 滑块下方的连续光谱渐变：取色边界与 BAND_SEGMENTS 同源，段端点共享颜色故无跳变
+const spectrumGradientCss = computed(() => {
+  const stops = SPECTRUM_GRADIENT_BOUNDS
+    .map((nm) => {
+      const pct = ((nm - WAVELENGTH_MIN) / (WAVELENGTH_MAX - WAVELENGTH_MIN)) * 100
+      return `${rgbCss(wavelengthToRGB(nm))} ${pct.toFixed(1)}%`
+    })
+    .join(', ')
+  return `linear-gradient(to right, ${stops})`
+})
+
+function clearCanvas(canvas: HTMLCanvasElement | null, bg: string) {
+  if (!canvas) return
+  canvas.width = canvas.clientWidth
+  canvas.height = 200
+  const ctx = canvas.getContext('2d')!
+  ctx.fillStyle = bg
+  ctx.fillRect(0, 0, canvas.width, canvas.height)
 }
 
 function drawPattern() {
   const canvas = patternRef.value
-  if (!canvas || !store.intensityData.length) return
+  if (!canvas) return
+  if (store.error || !store.intensityData.length) {
+    clearCanvas(canvas, 'black')
+    return
+  }
   canvas.width = canvas.clientWidth
   canvas.height = 200
   const ctx = canvas.getContext('2d')!
   const W = canvas.width, H = canvas.height
   ctx.fillStyle = 'black'
   ctx.fillRect(0, 0, W, H)
-  const [r, g, b] = wavelengthToRGB(store.params.wavelength)
+  const color = currentColor.value
   const data = store.intensityData
   for (let x = 0; x < W; x++) {
     const idx = Math.round(x / W * (data.length - 1))
     const intensity = data[idx] || 0
     const alpha = Math.min(1, intensity)
-    ctx.fillStyle = `rgba(${r},${g},${b},${alpha})`
+    ctx.fillStyle = rgbaCss(color, alpha)
     ctx.fillRect(x, 0, 1, H)
   }
 }
 
 function drawIntensity() {
   const canvas = intensityRef.value
-  if (!canvas || !store.intensityData.length) return
+  if (!canvas) return
   canvas.width = canvas.clientWidth
   canvas.height = 200
   const ctx = canvas.getContext('2d')!
   const W = canvas.width, H = canvas.height
   ctx.fillStyle = '#0f172a'
   ctx.fillRect(0, 0, W, H)
-  const [r, g, b] = wavelengthToRGB(store.params.wavelength)
+
+  if (store.error || !store.intensityData.length) return
+
+  const color = currentColor.value
   const data = store.intensityData
   ctx.beginPath()
-  ctx.strokeStyle = `rgb(${r},${g},${b})`
+  ctx.strokeStyle = rgbCss(color)
   ctx.lineWidth = 2
   data.forEach((v, i) => {
     const x = i / (data.length - 1) * W
@@ -145,7 +194,7 @@ function drawIntensity() {
   })
   ctx.stroke()
   // Fill
-  ctx.fillStyle = `rgba(${r},${g},${b},0.15)`
+  ctx.fillStyle = rgbaCss(color, 0.15)
   ctx.lineTo(W, H); ctx.lineTo(0, H)
   ctx.closePath(); ctx.fill()
   // Axes
@@ -158,12 +207,16 @@ function drawIntensity() {
 
 function drawHeatmap() {
   const canvas = heatmapRef.value
-  if (!canvas || !store.intensityData.length) return
+  if (!canvas) return
+  if (store.error || !store.intensityData.length) {
+    clearCanvas(canvas, 'black')
+    return
+  }
   canvas.width = canvas.clientWidth
   canvas.height = 200
   const ctx = canvas.getContext('2d')!
   const W = canvas.width, H = canvas.height
-  const [r, g, b] = wavelengthToRGB(store.params.wavelength)
+  const [r, g, b] = currentColor.value
   const data = store.intensityData
   const imgData = ctx.createImageData(W, H)
   for (let x = 0; x < W; x++) {
@@ -183,4 +236,7 @@ function renderAll() { drawPattern(); drawIntensity(); drawHeatmap() }
 
 onMounted(() => { store.compute(); setTimeout(renderAll, 100) })
 watch(() => store.intensityData, () => renderAll(), { deep: true })
+// 连续调节时即使数据未变（如边界重复值）也同步刷新图样颜色
+watch(() => store.wavelengthColor, () => renderAll())
+watch(() => store.error, () => renderAll())
 </script>
