@@ -18,10 +18,18 @@
         <div class="bg-slate-800 rounded-lg p-4 border border-slate-700 space-y-4">
           <h3 class="text-sm font-bold text-slate-400">参数调节</h3>
           <div>
-            <label class="text-xs text-slate-500">波长 λ = {{ store.params.wavelength }} nm</label>
-            <input type="range" min="380" max="780" step="5" v-model.number="store.params.wavelength" @input="store.compute" class="w-full accent-cyan-500" />
+            <label class="text-xs text-slate-500 flex items-center gap-1.5">
+              波长 λ =
+              <span class="font-bold" :style="{ color: store.wavelengthColor.css }">{{ store.params.wavelength }}</span>
+              nm
+              <span class="inline-block w-3 h-3 rounded-sm border border-slate-600"
+                :style="{ backgroundColor: store.wavelengthColor.css }"></span>
+              <span v-if="store.wavelengthColor.fallback" class="text-amber-400">(超出可见光范围)</span>
+            </label>
+            <input type="range" :min="SPECTRUM_RANGE.min" :max="SPECTRUM_RANGE.max" :step="SPECTRUM_RANGE.step"
+              v-model.number="store.params.wavelength" @input="store.compute" class="w-full accent-cyan-500" />
             <div class="flex justify-between text-xs mt-0.5">
-              <span style="color:#8b5cf6">380</span><span style="color:#06b6d4">500</span><span style="color:#22c55e">550</span><span style="color:#eab308">600</span><span style="color:#dc2626">780</span>
+              <span v-for="t in spectrumTicks" :key="t.nm" :style="{ color: t.css }">{{ t.nm }}</span>
             </div>
           </div>
           <div v-if="store.currentExperiment !== 'newton'">
@@ -40,6 +48,14 @@
         <div class="bg-slate-800 rounded-lg p-4 border border-slate-700 text-sm">
           <h3 class="text-sm font-bold text-slate-400 mb-3">理论公式</h3>
           <div class="space-y-2 text-xs text-slate-400">
+            <div class="bg-slate-900 rounded p-2 flex items-center gap-2">
+              <span class="inline-block w-3 h-3 rounded-sm border border-slate-600 shrink-0"
+                :style="{ backgroundColor: store.wavelengthColor.css }"></span>
+              <span>当前 λ =
+                <span class="font-bold" :style="{ color: store.wavelengthColor.css }">{{ store.params.wavelength }}</span>
+                nm
+              </span>
+            </div>
             <div v-if="store.currentExperiment === 'double'" class="bg-slate-900 rounded p-2">
               <div class="text-cyan-400 font-bold">双缝干涉</div>
               <div>亮纹: y = kλL/d (k=0,±1,±2...)</div>
@@ -81,6 +97,7 @@
 <script setup lang="ts">
 import { ref, onMounted, watch } from 'vue'
 import { useOpticsStore } from './store/optics'
+import { SPECTRUM_RANGE, SPECTRUM_TICKS, wavelengthToColor } from './config/spectrum'
 
 const store = useOpticsStore()
 const patternRef = ref<HTMLCanvasElement | null>(null)
@@ -93,32 +110,26 @@ const experiments = [
   { id: 'newton', name: '牛顿环干涉' },
 ]
 
-function wavelengthToRGB(nm: number): [number, number, number] {
-  let r = 0, g = 0, b = 0
-  if (nm >= 380 && nm < 440) { r = -(nm - 440) / 60; b = 1.0 }
-  else if (nm >= 440 && nm < 490) { g = (nm - 440) / 50; b = 1.0 }
-  else if (nm >= 490 && nm < 510) { g = 1.0; b = -(nm - 510) / 20 }
-  else if (nm >= 510 && nm < 580) { r = (nm - 510) / 70; g = 1.0 }
-  else if (nm >= 580 && nm < 645) { r = 1.0; g = -(nm - 645) / 65 }
-  else if (nm >= 645 && nm <= 780) { r = 1.0 }
-  return [Math.round(r * 255), Math.round(g * 255), Math.round(b * 255)]
-}
+// 色标刻度与图样共用同一映射函数，颜色永远一致
+const spectrumTicks = SPECTRUM_TICKS.map(nm => ({ nm, css: wavelengthToColor(nm).css }))
 
 function drawPattern() {
   const canvas = patternRef.value
-  if (!canvas || !store.intensityData.length) return
+  if (!canvas) return
   canvas.width = canvas.clientWidth
   canvas.height = 200
   const ctx = canvas.getContext('2d')!
   const W = canvas.width, H = canvas.height
+  // 先清屏再判数据，避免无效波段时残留上一帧图样
   ctx.fillStyle = 'black'
   ctx.fillRect(0, 0, W, H)
-  const [r, g, b] = wavelengthToRGB(store.params.wavelength)
   const data = store.intensityData
+  if (!data.length) return
+  const [r, g, b] = store.wavelengthColor.rgb
   for (let x = 0; x < W; x++) {
     const idx = Math.round(x / W * (data.length - 1))
     const intensity = data[idx] || 0
-    const alpha = Math.min(1, intensity)
+    const alpha = Math.min(1, Math.max(0, intensity))
     ctx.fillStyle = `rgba(${r},${g},${b},${alpha})`
     ctx.fillRect(x, 0, 1, H)
   }
@@ -126,21 +137,22 @@ function drawPattern() {
 
 function drawIntensity() {
   const canvas = intensityRef.value
-  if (!canvas || !store.intensityData.length) return
+  if (!canvas) return
   canvas.width = canvas.clientWidth
   canvas.height = 200
   const ctx = canvas.getContext('2d')!
   const W = canvas.width, H = canvas.height
   ctx.fillStyle = '#0f172a'
   ctx.fillRect(0, 0, W, H)
-  const [r, g, b] = wavelengthToRGB(store.params.wavelength)
   const data = store.intensityData
+  if (!data.length) return
+  const [r, g, b] = store.wavelengthColor.rgb
   ctx.beginPath()
   ctx.strokeStyle = `rgb(${r},${g},${b})`
   ctx.lineWidth = 2
   data.forEach((v, i) => {
     const x = i / (data.length - 1) * W
-    const y = H - v * (H - 10) - 5
+    const y = H - Math.min(1, Math.max(0, v || 0)) * (H - 10) - 5
     i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y)
   })
   ctx.stroke()
@@ -158,17 +170,20 @@ function drawIntensity() {
 
 function drawHeatmap() {
   const canvas = heatmapRef.value
-  if (!canvas || !store.intensityData.length) return
+  if (!canvas) return
   canvas.width = canvas.clientWidth
   canvas.height = 200
   const ctx = canvas.getContext('2d')!
   const W = canvas.width, H = canvas.height
-  const [r, g, b] = wavelengthToRGB(store.params.wavelength)
+  ctx.fillStyle = 'black'
+  ctx.fillRect(0, 0, W, H)
   const data = store.intensityData
+  if (!data.length) return
+  const [r, g, b] = store.wavelengthColor.rgb
   const imgData = ctx.createImageData(W, H)
   for (let x = 0; x < W; x++) {
     const idx = Math.round(x / W * (data.length - 1))
-    const intensity = Math.min(1, data[idx] || 0)
+    const intensity = Math.min(1, Math.max(0, data[idx] || 0))
     for (let y = 0; y < H; y++) {
       const dist = Math.abs(y - H / 2) / (H / 2)
       const alpha = intensity * (1 - dist * 0.8) * 255
@@ -182,5 +197,6 @@ function drawHeatmap() {
 function renderAll() { drawPattern(); drawIntensity(); drawHeatmap() }
 
 onMounted(() => { store.compute(); setTimeout(renderAll, 100) })
-watch(() => store.intensityData, () => renderAll(), { deep: true })
+// 同时监听数据与颜色：连续调节、失败重试后色标与图样始终指向同一波长参数
+watch([() => store.intensityData, () => store.wavelengthColor], () => renderAll(), { deep: true })
 </script>
